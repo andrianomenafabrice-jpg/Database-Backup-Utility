@@ -35,17 +35,16 @@ def connection_options(func):
             "--database", "-d", required=True,
             help="Nom de la base (ou chemin du fichier pour SQLite).",
         ),
+        click.option(
+            "--docker-container", "docker_container", default=None,
+            help="Exécute les outils (pg_dump, mysqldump, mongodump...) dans ce conteneur "
+                 "Docker : aucun client à installer. Host et port se rapportent alors "
+                 "à l'intérieur du conteneur (gardez les valeurs par défaut).",
+        ),
     ]
     for option in reversed(options):
         func = option(func)
     return func
-
-
-def _build_params(db_type, host, port, username, password, database) -> ConnectionParams:
-    return ConnectionParams(
-        db_type=db_type, database=database, host=host,
-        port=port, username=username, password=password,
-    )
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -62,12 +61,11 @@ def cli(verbose: bool, log_file) -> None:
 
 @cli.command("test-connection")
 @connection_options
-def test_connection(db_type, host, port, username, password, database) -> None:
+def test_connection(**conn) -> None:
     """Vérifie les identifiants et la connexion à la base."""
-    params = _build_params(db_type, host, port, username, password, database)
+    params = ConnectionParams(**conn)
     get_logger().debug("Test de connexion demandé : %s", params)
-    adapter = get_adapter(params)
-    adapter.test_connection()
+    get_adapter(params).test_connection()
     click.echo(f"[OK] Connexion réussie à la base {params.db_type} : {params.database}")
 
 
@@ -82,12 +80,11 @@ def test_connection(db_type, host, port, username, password, database) -> None:
     show_default=True, help="Dossier de destination des sauvegardes.",
 )
 @click.option("--no-compress", is_flag=True, help="Désactive la compression gzip.")
-def backup(db_type, host, port, username, password, database, mode, output, no_compress) -> None:
+def backup(mode, output, no_compress, **conn) -> None:
     """Crée une sauvegarde de la base."""
-    params = _build_params(db_type, host, port, username, password, database)
+    params = ConnectionParams(**conn)
     get_logger().debug("Backup demandé (%s) : %s", mode, params)
-    adapter = get_adapter(params)
-    result = run_backup(adapter, output, mode=mode, compress=not no_compress)
+    result = run_backup(get_adapter(params), output, mode=mode, compress=not no_compress)
     click.echo(f"[OK] Sauvegarde créée : {result.file_path}")
     click.echo(
         f"     Taille : {human_size(result.size_bytes)} | Durée : {result.duration_seconds:.2f} s"
@@ -113,23 +110,21 @@ def backup(db_type, host, port, username, password, database, mode, output, no_c
     "--skip-verify", is_flag=True,
     help="Ne vérifie pas le SHA-256 de la sauvegarde (déconseillé).",
 )
-def restore(
-    db_type, host, port, username, password, database,
-    backup_file, tables, overwrite, skip_verify,
-) -> None:
+def restore(backup_file, tables, overwrite, skip_verify, **conn) -> None:
     """Restaure la base depuis une sauvegarde (totale ou sélective)."""
-    params = _build_params(db_type, host, port, username, password, database)
+    params = ConnectionParams(**conn)
     get_logger().debug("Restore demandé : %s", params)
-    adapter = get_adapter(params)
     result = run_restore(
-        adapter, backup_file, tables=tables, overwrite=overwrite, verify=not skip_verify
+        get_adapter(params), backup_file,
+        tables=tables, overwrite=overwrite, verify=not skip_verify,
     )
     scope = ", ".join(result.tables) if result.tables else "base complète"
+    details = f"Durée : {result.duration_seconds:.2f} s"
+    if result.statements:
+        details = f"Instructions exécutées : {result.statements} | {details}"
     click.echo(f"[OK] Restauration terminée : {result.target}")
     click.echo(f"     Contenu restauré : {scope}")
-    click.echo(
-        f"     Instructions exécutées : {result.statements} | Durée : {result.duration_seconds:.2f} s"
-    )
+    click.echo(f"     {details}")
     click.echo(
         "     Intégrité : vérifiée (SHA-256)" if result.verified else "     Intégrité : NON vérifiée"
     )

@@ -7,7 +7,7 @@ import pytest
 from dbbackup.adapters import get_adapter
 from dbbackup.backup import run_backup
 from dbbackup.config import ConnectionParams
-from dbbackup.exceptions import BackupError, ConfigError, DatabaseConnectionError
+from dbbackup.exceptions import BackupError, DatabaseConnectionError
 from dbbackup.utils.helpers import human_size, sha256_file
 
 
@@ -84,11 +84,6 @@ def test_failed_backup_leaves_nothing(tmp_path):
 def test_unsupported_mode(sample_db, tmp_path):
     with pytest.raises(BackupError):
         run_backup(make_adapter(sample_db), tmp_path / "out", mode="incremental")
-
-
-def test_adapter_not_available_yet():
-    with pytest.raises(ConfigError):
-        get_adapter(ConnectionParams(db_type="mysql", database="x"))
 
 
 def test_human_size():
