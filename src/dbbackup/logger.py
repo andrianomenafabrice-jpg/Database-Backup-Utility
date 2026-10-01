@@ -42,7 +42,11 @@ def setup_logging(
     verbose: bool = False,
     log_file: Optional[Union[str, Path]] = None,
 ) -> logging.Logger:
-    """Configure le logger : console (stderr) + fichier avec rotation."""
+    """Configure le logger : fichier avec rotation + console.
+
+    Hors mode verbose, la console reste silencieuse : les erreurs destinées à
+    l'utilisateur sont affichées une seule fois par la CLI, le détail va dans le fichier.
+    """
     logger = get_logger()
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
@@ -55,7 +59,7 @@ def setup_logging(
     file_format = logging.Formatter("%(asctime)s | %(levelname)-8s | %(message)s")
 
     console = logging.StreamHandler(sys.stderr)
-    console.setLevel(logging.DEBUG if verbose else logging.WARNING)
+    console.setLevel(logging.DEBUG if verbose else logging.CRITICAL)
     console.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
     console.addFilter(redactor)
     logger.addHandler(console)
@@ -71,6 +75,9 @@ def setup_logging(
         file_handler.addFilter(redactor)
         logger.addHandler(file_handler)
     except OSError as exc:
-        logger.warning("Impossible d'écrire le fichier de log %s : %s", path, exc)
+        message = f"Impossible d'écrire le fichier de log {path} : {exc}"
+        logger.warning(message)
+        if not verbose:
+            print(f"Avertissement : {message}", file=sys.stderr)
 
     return logger

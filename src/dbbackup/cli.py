@@ -7,9 +7,12 @@ import sys
 import click
 
 from dbbackup import __version__
+from dbbackup.adapters import get_adapter
+from dbbackup.backup import run_backup
 from dbbackup.config import SUPPORTED_DBMS, ConnectionParams
 from dbbackup.exceptions import DBBackupError
 from dbbackup.logger import get_logger, setup_logging
+from dbbackup.utils.helpers import human_size
 
 
 def connection_options(func):
@@ -68,7 +71,9 @@ def test_connection(db_type, host, port, username, password, database) -> None:
     """Vérifie les identifiants et la connexion à la base."""
     params = _build_params(db_type, host, port, username, password, database)
     get_logger().debug("Test de connexion demandé : %s", params)
-    _not_ready(2)
+    adapter = get_adapter(params)
+    adapter.test_connection()
+    click.echo(f"[OK] Connexion réussie à la base {params.db_type} : {params.database}")
 
 
 @cli.command()
@@ -86,7 +91,13 @@ def backup(db_type, host, port, username, password, database, mode, output, no_c
     """Crée une sauvegarde de la base."""
     params = _build_params(db_type, host, port, username, password, database)
     get_logger().debug("Backup demandé (%s) : %s", mode, params)
-    _not_ready(2)
+    adapter = get_adapter(params)
+    result = run_backup(adapter, output, mode=mode, compress=not no_compress)
+    click.echo(f"[OK] Sauvegarde créée : {result.file_path}")
+    click.echo(
+        f"     Taille : {human_size(result.size_bytes)} | Durée : {result.duration_seconds:.2f} s"
+    )
+    click.echo(f"     SHA-256 : {result.sha256}")
 
 
 @cli.command()
