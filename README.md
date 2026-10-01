@@ -47,7 +47,7 @@ pytest
 
 - [x] Étape 1 : structure, CLI, logging, tests
 - [x] Étape 2 : adaptateurs + SQLite + compression
-- [ ] Étape 3 : restauration (totale et sélective)
+- [x] Étape 3 : restauration (totale et sélective)
 - [ ] Étape 4 : PostgreSQL, MySQL, MongoDB
 - [ ] Étape 5 : incrémental / différentiel
 - [ ] Étape 6 : stockage cloud

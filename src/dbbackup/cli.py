@@ -12,6 +12,7 @@ from dbbackup.backup import run_backup
 from dbbackup.config import SUPPORTED_DBMS, ConnectionParams
 from dbbackup.exceptions import DBBackupError
 from dbbackup.logger import get_logger, setup_logging
+from dbbackup.restore import run_restore
 from dbbackup.utils.helpers import human_size
 
 
@@ -44,12 +45,6 @@ def _build_params(db_type, host, port, username, password, database) -> Connecti
     return ConnectionParams(
         db_type=db_type, database=database, host=host,
         port=port, username=username, password=password,
-    )
-
-
-def _not_ready(step: int) -> None:
-    raise click.ClickException(
-        f"Cette commande sera disponible à l'étape {step} du développement."
     )
 
 
@@ -108,13 +103,38 @@ def backup(db_type, host, port, username, password, database, mode, output, no_c
 )
 @click.option(
     "--table", "-t", "tables", multiple=True,
-    help="Table/collection à restaurer (option répétable).",
+    help="Table/collection à restaurer (option répétable). Sans cette option, la base entière est restaurée.",
 )
-def restore(db_type, host, port, username, password, database, backup_file, tables) -> None:
+@click.option(
+    "--overwrite", is_flag=True,
+    help="Autorise le remplacement d'une base ou de tables existantes.",
+)
+@click.option(
+    "--skip-verify", is_flag=True,
+    help="Ne vérifie pas le SHA-256 de la sauvegarde (déconseillé).",
+)
+def restore(
+    db_type, host, port, username, password, database,
+    backup_file, tables, overwrite, skip_verify,
+) -> None:
     """Restaure la base depuis une sauvegarde (totale ou sélective)."""
     params = _build_params(db_type, host, port, username, password, database)
     get_logger().debug("Restore demandé : %s", params)
-    _not_ready(3)
+    adapter = get_adapter(params)
+    result = run_restore(
+        adapter, backup_file, tables=tables, overwrite=overwrite, verify=not skip_verify
+    )
+    scope = ", ".join(result.tables) if result.tables else "base complète"
+    click.echo(f"[OK] Restauration terminée : {result.target}")
+    click.echo(f"     Contenu restauré : {scope}")
+    click.echo(
+        f"     Instructions exécutées : {result.statements} | Durée : {result.duration_seconds:.2f} s"
+    )
+    click.echo(
+        "     Intégrité : vérifiée (SHA-256)" if result.verified else "     Intégrité : NON vérifiée"
+    )
+    if result.safety_copy:
+        click.echo(f"     Ancienne base conservée : {result.safety_copy}")
 
 
 def main() -> None:

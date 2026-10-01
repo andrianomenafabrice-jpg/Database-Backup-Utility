@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import BinaryIO
+from dataclasses import dataclass
+from pathlib import Path
+from typing import BinaryIO, Optional, Sequence
 
 from dbbackup.config import ConnectionParams
 from dbbackup.utils.helpers import safe_name
+
+
+@dataclass
+class RestoreOutcome:
+    """Résultat d'une restauration côté adaptateur."""
+
+    statements: int
+    safety_copy: Optional[Path] = None
 
 
 class DatabaseAdapter(ABC):
@@ -30,3 +40,16 @@ class DatabaseAdapter(ABC):
     @abstractmethod
     def dump_to(self, out: BinaryIO) -> None:
         """Écrit un export complet de la base dans `out` (flux binaire, en streaming)."""
+
+    @abstractmethod
+    def restore_from(
+        self,
+        inp: BinaryIO,
+        tables: Sequence[str] = (),
+        overwrite: bool = False,
+    ) -> RestoreOutcome:
+        """Restaure la base depuis le flux `inp` (déjà décompressé).
+
+        Si `tables` est non vide, seules ces tables sont restaurées.
+        Lève RestoreError en cas d'échec.
+        """

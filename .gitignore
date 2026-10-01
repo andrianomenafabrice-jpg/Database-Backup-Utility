@@ -23,3 +23,5 @@ backups/
 .idea/
 .DS_Store
 Thumbs.db
+*.before-restore-*
+*.restore.tmp
