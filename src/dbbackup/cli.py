@@ -9,6 +9,7 @@ import click
 from dbbackup import __version__
 from dbbackup.adapters import get_adapter
 from dbbackup.backup import run_backup
+from dbbackup.catalog import list_backups
 from dbbackup.config import SUPPORTED_DBMS, ConnectionParams
 from dbbackup.exceptions import DBBackupError
 from dbbackup.logger import get_logger, setup_logging
@@ -73,7 +74,9 @@ def test_connection(**conn) -> None:
 @connection_options
 @click.option(
     "--mode", type=click.Choice(["full", "incremental", "differential"]),
-    default="full", show_default=True, help="Type de sauvegarde.",
+    default="full", show_default=True,
+    help="full : base entière. incremental : tables modifiées depuis la dernière sauvegarde. "
+         "differential : tables modifiées depuis la dernière sauvegarde complète.",
 )
 @click.option(
     "--output", "-o", type=click.Path(file_okay=False), default="./backups",
@@ -85,11 +88,18 @@ def backup(mode, output, no_compress, **conn) -> None:
     params = ConnectionParams(**conn)
     get_logger().debug("Backup demandé (%s) : %s", mode, params)
     result = run_backup(get_adapter(params), output, mode=mode, compress=not no_compress)
-    click.echo(f"[OK] Sauvegarde créée : {result.file_path}")
+    click.echo(f"[OK] Sauvegarde {result.mode} créée : {result.file_path}")
     click.echo(
         f"     Taille : {human_size(result.size_bytes)} | Durée : {result.duration_seconds:.2f} s"
     )
     click.echo(f"     SHA-256 : {result.sha256}")
+    if result.parent:
+        click.echo(f"     Basée sur : {result.parent}")
+    if result.included_tables is not None:
+        included = ", ".join(result.included_tables) or "aucun changement"
+        click.echo(f"     Tables sauvegardées : {included}")
+    if result.dropped_tables:
+        click.echo(f"     Tables supprimées depuis la référence : {', '.join(result.dropped_tables)}")
 
 
 @cli.command()
@@ -111,7 +121,7 @@ def backup(mode, output, no_compress, **conn) -> None:
     help="Ne vérifie pas le SHA-256 de la sauvegarde (déconseillé).",
 )
 def restore(backup_file, tables, overwrite, skip_verify, **conn) -> None:
-    """Restaure la base depuis une sauvegarde (totale ou sélective)."""
+    """Restaure la base depuis une sauvegarde (totale, sélective ou chaîne incrémentale)."""
     params = ConnectionParams(**conn)
     get_logger().debug("Restore demandé : %s", params)
     result = run_restore(
@@ -124,12 +134,35 @@ def restore(backup_file, tables, overwrite, skip_verify, **conn) -> None:
         details = f"Instructions exécutées : {result.statements} | {details}"
     click.echo(f"[OK] Restauration terminée : {result.target}")
     click.echo(f"     Contenu restauré : {scope}")
+    if result.chain > 1:
+        click.echo(f"     Chaîne rejouée : {result.chain} sauvegardes")
     click.echo(f"     {details}")
     click.echo(
         "     Intégrité : vérifiée (SHA-256)" if result.verified else "     Intégrité : NON vérifiée"
     )
     if result.safety_copy:
         click.echo(f"     Ancienne base conservée : {result.safety_copy}")
+
+
+@cli.command("list")
+@click.option(
+    "--output", "-o", type=click.Path(file_okay=False), default="./backups",
+    show_default=True, help="Dossier contenant les sauvegardes.",
+)
+def list_cmd(output) -> None:
+    """Liste les sauvegardes d'un dossier (date, type, taille, sauvegarde parente)."""
+    backups = list_backups(output)
+    if not backups:
+        click.echo(f"Aucune sauvegarde trouvée dans {output}")
+        return
+    for meta in backups:
+        line = (
+            f"{str(meta.get('created_at', ''))[:19]}  {meta.get('mode', '?'):<12} "
+            f"{human_size(int(meta.get('size_bytes', 0))):>9}  {meta['file']}"
+        )
+        if meta.get("parent"):
+            line += f"   <- {meta['parent']}"
+        click.echo(line)
 
 
 def main() -> None:

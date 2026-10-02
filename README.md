@@ -49,7 +49,7 @@ pytest
 - [x] Étape 2 : adaptateurs + SQLite + compression
 - [x] Étape 3 : restauration (totale et sélective)
 - [x] Étape 4 : PostgreSQL, MySQL, MongoDB
-- [ ] Étape 5 : incrémental / différentiel
+- [x] Étape 5 : incrémental / différentiel
 - [ ] Étape 6 : stockage cloud
 - [ ] Étape 7 : Slack + planification
 - [ ] Étape 8 : CI et documentation finale

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import gzip
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import BinaryIO, Optional, Sequence
+from typing import BinaryIO, Dict, Iterator, List, Optional, Sequence
 
 from dbbackup.config import ConnectionParams
+from dbbackup.exceptions import BackupError, RestoreError
 from dbbackup.utils.helpers import safe_name
 
 
@@ -19,11 +22,40 @@ class RestoreOutcome:
     safety_copy: Optional[Path] = None
 
 
+@dataclass
+class SnapshotResult:
+    """Résultat d'un export pris sur un instantané cohérent de la base."""
+
+    fingerprints: Dict[str, str]  # empreinte de chaque table à cet instant
+    included: Optional[List[str]] = None  # tables écrites ; None = tout (sauvegarde complète)
+    dropped: List[str] = field(default_factory=list)  # tables supprimées depuis la référence
+
+
+@dataclass
+class ChainStep:
+    """Une sauvegarde de la chaîne (complète, puis incrémentales / différentielle)."""
+
+    path: Path
+    mode: str
+    included: Optional[List[str]]
+    dropped: List[str]
+
+    @contextmanager
+    def stream(self) -> Iterator[BinaryIO]:
+        """Ouvre la sauvegarde en lecture, en décompressant si nécessaire."""
+        with open(self.path, "rb") as raw:
+            magic = raw.read(2)
+            raw.seek(0)
+            yield gzip.GzipFile(fileobj=raw) if magic == b"\x1f\x8b" else raw
+
+
 class DatabaseAdapter(ABC):
     """Contrat que chaque SGBD doit respecter."""
 
     #: extension du fichier de sauvegarde brut (avant compression)
     file_extension = "sql"
+    #: True si l'adaptateur sait faire des sauvegardes incrémentales / différentielles
+    supports_incremental = False
 
     def __init__(self, params: ConnectionParams) -> None:
         self.params = params
@@ -32,6 +64,12 @@ class DatabaseAdapter(ABC):
     def label(self) -> str:
         """Nom court de la base, utilisé dans le nom des fichiers de sauvegarde."""
         return safe_name(self.params.database)
+
+    @property
+    def identity(self) -> str:
+        """Identifiant stable de la base source (relie les sauvegardes d'une même base)."""
+        p = self.params
+        return f"{p.db_type}://{p.host}:{p.port}/{p.database}"
 
     @abstractmethod
     def test_connection(self) -> None:
@@ -53,3 +91,25 @@ class DatabaseAdapter(ABC):
         Si `tables` est non vide, seules ces tables sont restaurées.
         Lève RestoreError en cas d'échec.
         """
+
+    def dump_snapshot(
+        self,
+        out: BinaryIO,
+        reference: Optional[Dict[str, str]] = None,
+    ) -> SnapshotResult:
+        """Export + empreintes des tables, sur le même instantané.
+
+        reference=None : export complet. Sinon : seules les tables dont l'empreinte
+        diffère de `reference` sont écrites. À implémenter si supports_incremental.
+        """
+        raise BackupError(
+            f"Les sauvegardes incrémentales/différentielles ne sont pas disponibles "
+            f"pour {self.params.db_type} (SQLite uniquement pour l'instant)."
+        )
+
+    def restore_chain(self, steps: Sequence[ChainStep], overwrite: bool = False) -> RestoreOutcome:
+        """Restaure une chaîne de sauvegardes (complète puis incrémentales)."""
+        raise RestoreError(
+            f"La restauration de sauvegardes incrémentales/différentielles n'est pas "
+            f"disponible pour {self.params.db_type} (SQLite uniquement pour l'instant)."
+        )

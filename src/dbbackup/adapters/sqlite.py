@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Dict, Optional, Sequence, Set, Tuple
+from typing import BinaryIO, Dict, List, Optional, Sequence, Set, Tuple
 
-from dbbackup.adapters.base import DatabaseAdapter, RestoreOutcome
+from dbbackup.adapters.base import ChainStep, DatabaseAdapter, RestoreOutcome, SnapshotResult
 from dbbackup.exceptions import BackupError, DatabaseConnectionError, RestoreError
 from dbbackup.logger import get_logger
 from dbbackup.utils.helpers import safe_name
@@ -79,10 +80,15 @@ def _classify(statement: str) -> Tuple[str, Optional[str]]:
 
 class SQLiteAdapter(DatabaseAdapter):
     file_extension = "sql"
+    supports_incremental = True
 
     @property
     def label(self) -> str:
         return safe_name(Path(self.params.database).stem)
+
+    @property
+    def identity(self) -> str:
+        return "sqlite://" + str(self._path().resolve())
 
     def _path(self) -> Path:
         return Path(self.params.database).expanduser()
@@ -127,6 +133,79 @@ class SQLiteAdapter(DatabaseAdapter):
         finally:
             conn.close()
 
+    @staticmethod
+    def _fingerprints(conn: sqlite3.Connection) -> Dict[str, str]:
+        """Empreinte SHA-256 de chaque table : définition, index, triggers, compteur
+        AUTOINCREMENT et contenu. Toute modification change l'empreinte."""
+        has_sequence = (
+            conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'sqlite_sequence'").fetchone()
+            is not None
+        )
+        names = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND substr(name, 1, 7) != 'sqlite_' ORDER BY name"
+            )
+        ]
+        result: Dict[str, str] = {}
+        for name in names:
+            digest = hashlib.sha256()
+            for (sql,) in conn.execute(
+                "SELECT sql FROM sqlite_master WHERE tbl_name = ? AND sql IS NOT NULL "
+                "ORDER BY type, name",
+                (name,),
+            ):
+                digest.update(sql.encode("utf-8", "backslashreplace"))
+                digest.update(b"\x00")
+            if has_sequence:
+                row = conn.execute("SELECT seq FROM sqlite_sequence WHERE name = ?", (name,)).fetchone()
+                digest.update(repr(row).encode("utf-8"))
+            for row in conn.execute(f"SELECT * FROM {_quote(name)}"):
+                digest.update(repr(row).encode("utf-8", "backslashreplace"))
+                digest.update(b"\n")
+            result[name] = digest.hexdigest()
+        return result
+
+    def dump_snapshot(
+        self,
+        out: BinaryIO,
+        reference: Optional[Dict[str, str]] = None,
+    ) -> SnapshotResult:
+        """Export complet (reference=None) ou limité aux tables modifiées depuis `reference`.
+
+        Empreintes et export sont pris dans la même transaction de lecture : cohérents.
+        """
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN")
+            fingerprints = self._fingerprints(conn)
+
+            if reference is None:
+                for statement in conn.iterdump():
+                    out.write(f"{statement}\n".encode("utf-8"))
+                conn.rollback()
+                return SnapshotResult(fingerprints=fingerprints)
+
+            changed = sorted(t for t, fp in fingerprints.items() if reference.get(t) != fp)
+            dropped = sorted(t for t in reference if t not in fingerprints)
+            wanted = {t.lower() for t in changed}
+            for statement in conn.iterdump():
+                kind, table = _classify(statement)
+                keep = kind == "tx" or (
+                    kind in ("create_table", "insert", "index", "trigger", "sequence_insert")
+                    and table is not None
+                    and table.lower() in wanted
+                )
+                if keep:
+                    out.write(f"{statement}\n".encode("utf-8"))
+            conn.rollback()
+            return SnapshotResult(fingerprints=fingerprints, included=changed, dropped=dropped)
+        except sqlite3.Error as exc:
+            raise BackupError(f"Erreur pendant l'export SQLite : {exc}") from exc
+        finally:
+            conn.close()
+
     # ----------------------------------------------------------------- restore
 
     @staticmethod
@@ -151,6 +230,51 @@ class SQLiteAdapter(DatabaseAdapter):
                 "Fermez les programmes qui utilisent cette base puis réessayez."
             ) from exc
 
+    def _check_target(self, target: Path, overwrite: bool) -> None:
+        if target.exists():
+            if not target.is_file():
+                raise RestoreError(f"La cible n'est pas un fichier : {target}")
+            if not overwrite:
+                raise RestoreError(
+                    f"La base cible existe déjà : {target}. "
+                    "Utilisez --overwrite pour autoriser son remplacement."
+                )
+
+    def _swap_into_place(self, tmp: Path, target: Path) -> Optional[Path]:
+        """Met la base reconstruite en place ; l'ancienne est conservée (copie de sécurité)."""
+        safety: Optional[Path] = None
+        if target.exists():
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            safety = target.with_name(f"{target.name}.before-restore-{stamp}")
+            try:
+                self._move_with_sidecars(target, safety)
+            except RestoreError:
+                self._remove_files(tmp)
+                raise
+        try:
+            tmp.replace(target)
+        except OSError as exc:
+            if safety is not None:
+                try:
+                    self._move_with_sidecars(safety, target)
+                except RestoreError:
+                    pass
+            self._remove_files(tmp)
+            raise RestoreError(f"Impossible de mettre la base restaurée en place : {exc}") from exc
+        return safety
+
+    def _new_temp_database(self, target: Path) -> Tuple[Path, sqlite3.Connection]:
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RestoreError(f"Impossible de créer le dossier {target.parent} : {exc}") from exc
+        tmp = target.with_name(target.name + ".restore.tmp")
+        self._remove_files(tmp)
+        try:
+            return tmp, sqlite3.connect(str(tmp), isolation_level=None)
+        except sqlite3.Error as exc:
+            raise RestoreError(f"Impossible de créer la base temporaire {tmp} : {exc}") from exc
+
     def restore_from(
         self,
         inp: BinaryIO,
@@ -162,14 +286,7 @@ class SQLiteAdapter(DatabaseAdapter):
         requested: Dict[str, str] = {t.lower(): t for t in names}
         selected: Optional[Set[str]] = set(requested) or None
 
-        if target.exists():
-            if not target.is_file():
-                raise RestoreError(f"La cible n'est pas un fichier : {target}")
-            if not overwrite:
-                raise RestoreError(
-                    f"La base cible existe déjà : {target}. "
-                    "Utilisez --overwrite pour autoriser son remplacement."
-                )
+        self._check_target(target, overwrite)
 
         if selected is not None and target.exists():
             return self._restore_in_place(inp, target, selected, requested)
@@ -183,18 +300,7 @@ class SQLiteAdapter(DatabaseAdapter):
         requested: Dict[str, str],
     ) -> RestoreOutcome:
         """Reconstruit la base dans un fichier temporaire puis la met en place."""
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise RestoreError(f"Impossible de créer le dossier {target.parent} : {exc}") from exc
-
-        tmp = target.with_name(target.name + ".restore.tmp")
-        self._remove_files(tmp)
-        try:
-            conn = sqlite3.connect(str(tmp), isolation_level=None)
-        except sqlite3.Error as exc:
-            raise RestoreError(f"Impossible de créer la base temporaire {tmp} : {exc}") from exc
-
+        tmp, conn = self._new_temp_database(target)
         try:
             statements = self._run(conn, inp, selected, requested, drop_existing=False)
         except Exception:
@@ -202,28 +308,7 @@ class SQLiteAdapter(DatabaseAdapter):
             self._remove_files(tmp)
             raise
         conn.close()
-
-        safety: Optional[Path] = None
-        if target.exists():
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            safety = target.with_name(f"{target.name}.before-restore-{stamp}")
-            try:
-                self._move_with_sidecars(target, safety)
-            except RestoreError:
-                self._remove_files(tmp)
-                raise
-
-        try:
-            tmp.replace(target)
-        except OSError as exc:
-            if safety is not None:
-                try:
-                    self._move_with_sidecars(safety, target)
-                except RestoreError:
-                    pass
-            self._remove_files(tmp)
-            raise RestoreError(f"Impossible de mettre la base restaurée en place : {exc}") from exc
-
+        safety = self._swap_into_place(tmp, target)
         return RestoreOutcome(statements=statements, safety_copy=safety)
 
     def _restore_in_place(
@@ -251,6 +336,35 @@ class SQLiteAdapter(DatabaseAdapter):
             raise
         conn.close()
         return RestoreOutcome(statements=statements, safety_copy=None)
+
+    def restore_chain(self, steps: Sequence[ChainStep], overwrite: bool = False) -> RestoreOutcome:
+        """Rejoue une chaîne (complète, puis incrémentales) dans une base temporaire,
+        puis la met en place : la base d'origine n'est jamais touchée en cas d'erreur."""
+        target = self._path()
+        self._check_target(target, overwrite)
+        tmp, conn = self._new_temp_database(target)
+        statements = 0
+        try:
+            for step in steps:
+                with step.stream() as stream:
+                    if step.included is None:
+                        statements += self._run(conn, stream, None, {}, drop_existing=False)
+                    else:
+                        requested = {t.lower(): t for t in step.included}
+                        statements += self._run(
+                            conn, stream, set(requested), requested, drop_existing=True
+                        )
+                for table in step.dropped:
+                    conn.execute(f"DROP TABLE IF EXISTS {_quote(table)}")
+        except Exception as exc:
+            conn.close()
+            self._remove_files(tmp)
+            if isinstance(exc, sqlite3.Error):
+                raise RestoreError(f"Erreur SQLite pendant la restauration : {exc}") from exc
+            raise
+        conn.close()
+        safety = self._swap_into_place(tmp, target)
+        return RestoreOutcome(statements=statements, safety_copy=safety)
 
     def _run(
         self,
