@@ -56,6 +56,14 @@ def list_backups(output_dir, require_data: bool = True) -> List[Dict[str, Any]]:
     return found
 
 
+def has_full_backup(output_dir, source_id: str) -> bool:
+    """True si une sauvegarde complète exploitable existe pour cette base."""
+    return any(
+        m.get("source_id") == source_id and m.get("mode") == "full" and m.get("tables") is not None
+        for m in list_backups(output_dir)
+    )
+
+
 def find_reference(output_dir, source_id: str, mode: str) -> Dict[str, Any]:
     """Trouve la sauvegarde de référence pour une incrémentale ou une différentielle.
 

@@ -16,6 +16,7 @@ _SECRET_PATTERNS = (
     re.compile(r"(?i)((?:password|passwd|pwd|secret|token)\s*[=:]\s*)\S+"),
     re.compile(r"(?i)(--password\s+)\S+"),
     re.compile(r"(?i)(\b(?:accountkey|sharedaccesskey|sig)\s*=\s*)[^;&\s]+"),
+    re.compile(r"(?i)(hooks\.slack\.com/services/)\S+"),
 )
 
 

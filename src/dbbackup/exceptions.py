@@ -23,3 +23,7 @@ class RestoreError(DBBackupError):
 
 class StorageError(DBBackupError):
     """Échec d'accès au stockage (local ou cloud)."""
+
+
+class NotificationError(DBBackupError):
+    """Échec d'envoi d'une notification (Slack...)."""

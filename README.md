@@ -51,7 +51,7 @@ pytest
 - [x] Étape 4 : PostgreSQL, MySQL, MongoDB
 - [x] Étape 5 : incrémental / différentiel
 - [x] Étape 6 : stockage cloud
-- [ ] Étape 7 : Slack + planification
+- [x] Étape 7 : Slack + planification
 - [ ] Étape 8 : CI et documentation finale
 
 ## Licence
