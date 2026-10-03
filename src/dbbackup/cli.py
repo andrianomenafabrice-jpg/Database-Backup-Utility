@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sys
+import tempfile
+from pathlib import Path
 
 import click
 
@@ -14,6 +16,8 @@ from dbbackup.config import SUPPORTED_DBMS, ConnectionParams
 from dbbackup.exceptions import DBBackupError
 from dbbackup.logger import get_logger, setup_logging
 from dbbackup.restore import run_restore
+from dbbackup.storage import is_remote
+from dbbackup.transfer import fetch_backup, list_remote_backups, upload_backup
 from dbbackup.utils.helpers import human_size
 
 
@@ -83,7 +87,12 @@ def test_connection(**conn) -> None:
     show_default=True, help="Dossier de destination des sauvegardes.",
 )
 @click.option("--no-compress", is_flag=True, help="Désactive la compression gzip.")
-def backup(mode, output, no_compress, **conn) -> None:
+@click.option(
+    "--upload", "upload_to", default=None, metavar="DESTINATION",
+    help="Envoie aussi la sauvegarde vers : s3://bucket/dossier, gs://bucket/dossier, "
+         "azure://conteneur/dossier ou un autre dossier (copie). La copie locale est conservée.",
+)
+def backup(mode, output, no_compress, upload_to, **conn) -> None:
     """Crée une sauvegarde de la base."""
     params = ConnectionParams(**conn)
     get_logger().debug("Backup demandé (%s) : %s", mode, params)
@@ -100,13 +109,17 @@ def backup(mode, output, no_compress, **conn) -> None:
         click.echo(f"     Tables sauvegardées : {included}")
     if result.dropped_tables:
         click.echo(f"     Tables supprimées depuis la référence : {', '.join(result.dropped_tables)}")
+    if upload_to:
+        storage = upload_backup(result, upload_to)
+        click.echo(f"[OK] Envoyée vers : {storage.location}")
 
 
 @cli.command()
 @connection_options
 @click.option(
     "--file", "-f", "backup_file", required=True,
-    type=click.Path(dir_okay=False), help="Fichier de sauvegarde à restaurer.",
+    type=click.Path(dir_okay=False),
+    help="Sauvegarde à restaurer : fichier local ou URL (s3://..., gs://..., azure://...).",
 )
 @click.option(
     "--table", "-t", "tables", multiple=True,
@@ -124,10 +137,17 @@ def restore(backup_file, tables, overwrite, skip_verify, **conn) -> None:
     """Restaure la base depuis une sauvegarde (totale, sélective ou chaîne incrémentale)."""
     params = ConnectionParams(**conn)
     get_logger().debug("Restore demandé : %s", params)
-    result = run_restore(
-        get_adapter(params), backup_file,
-        tables=tables, overwrite=overwrite, verify=not skip_verify,
-    )
+    adapter = get_adapter(params)
+    if is_remote(backup_file):
+        with tempfile.TemporaryDirectory() as workdir:
+            local_file = fetch_backup(backup_file, Path(workdir))
+            result = run_restore(
+                adapter, local_file, tables=tables, overwrite=overwrite, verify=not skip_verify
+            )
+    else:
+        result = run_restore(
+            adapter, backup_file, tables=tables, overwrite=overwrite, verify=not skip_verify
+        )
     scope = ", ".join(result.tables) if result.tables else "base complète"
     details = f"Durée : {result.duration_seconds:.2f} s"
     if result.statements:
@@ -147,11 +167,12 @@ def restore(backup_file, tables, overwrite, skip_verify, **conn) -> None:
 @cli.command("list")
 @click.option(
     "--output", "-o", type=click.Path(file_okay=False), default="./backups",
-    show_default=True, help="Dossier contenant les sauvegardes.",
+    show_default=True,
+    help="Dossier ou stockage (s3://..., gs://..., azure://...) contenant les sauvegardes.",
 )
 def list_cmd(output) -> None:
-    """Liste les sauvegardes d'un dossier (date, type, taille, sauvegarde parente)."""
-    backups = list_backups(output)
+    """Liste les sauvegardes d'un dossier ou d'un stockage cloud (date, type, taille, parent)."""
+    backups = list_remote_backups(output) if is_remote(output) else list_backups(output)
     if not backups:
         click.echo(f"Aucune sauvegarde trouvée dans {output}")
         return

@@ -50,7 +50,7 @@ pytest
 - [x] Étape 3 : restauration (totale et sélective)
 - [x] Étape 4 : PostgreSQL, MySQL, MongoDB
 - [x] Étape 5 : incrémental / différentiel
-- [ ] Étape 6 : stockage cloud
+- [x] Étape 6 : stockage cloud
 - [ ] Étape 7 : Slack + planification
 - [ ] Étape 8 : CI et documentation finale
 

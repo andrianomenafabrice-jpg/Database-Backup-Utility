@@ -1,0 +1,21 @@
+{
+  "file": "demo_sqlite_full_20261003_025731.sql.gz",
+  "database": "demo.db",
+  "source_id": "sqlite://F:\\Memoire\\Projet\\Database-Backup-Utility\\demo.db",
+  "db_type": "sqlite",
+  "mode": "full",
+  "created_at": "2026-10-03T02:57:31.787019+00:00",
+  "finished_at": "2026-10-03T02:57:31.849059+00:00",
+  "compressed": true,
+  "size_bytes": 245,
+  "sha256": "1671815e66b0988c76b91cd6124a2598986d1488754c9537d7c8078c5ae3d972",
+  "duration_seconds": 0.05,
+  "tool_version": "0.1.0",
+  "parent": null,
+  "parent_sha256": null,
+  "tables": {
+    "clients": "552e8567521f07e19a41de54d1d6c8acbef1c1d1c21e2cf71347f01cfd5f6c87"
+  },
+  "included_tables": null,
+  "dropped_tables": []
+}

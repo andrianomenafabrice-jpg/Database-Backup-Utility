@@ -32,10 +32,11 @@ def _created_at(meta: Dict[str, Any]) -> datetime:
         return datetime.min
 
 
-def list_backups(output_dir) -> List[Dict[str, Any]]:
+def list_backups(output_dir, require_data: bool = True) -> List[Dict[str, Any]]:
     """Liste les sauvegardes d'un dossier (les plus anciennes d'abord).
 
-    Seules les sauvegardes dont le fichier de données existe encore sont retournées.
+    Par défaut, seules les sauvegardes dont le fichier de données existe encore sont
+    retournées (require_data=False : on ne lit que les métadonnées).
     """
     directory = Path(output_dir)
     if not directory.is_dir():
@@ -48,7 +49,7 @@ def list_backups(output_dir) -> List[Dict[str, Any]]:
             continue
         if not isinstance(meta, dict) or not meta.get("file"):
             continue
-        if not (directory / meta["file"]).is_file():
+        if require_data and not (directory / meta["file"]).is_file():
             continue
         found.append(meta)
     found.sort(key=_created_at)
